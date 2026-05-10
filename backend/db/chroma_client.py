@@ -32,15 +32,12 @@ class ChromaClient:
 
     def _connect_sync(self):
         try:
-            self._client = chromadb.HttpClient(
-                host=settings.CHROMA_HOST,
-                port=int(settings.CHROMA_PORT),
-            )
-            self._client.heartbeat()
-            logger.info(f"chroma.connected host={settings.CHROMA_HOST}")
-        except Exception as e:
-            logger.warning(f"chroma.http_failed falling back to in-memory: {e}")
+            # Embedded mode — no separate ChromaDB server needed
             self._client = chromadb.EphemeralClient()
+            logger.info("chroma.connected mode=embedded")
+        except Exception as e:
+            logger.error(f"chroma.failed: {e}")
+            raise
 
         self._embeddings = embedding_functions.DefaultEmbeddingFunction()
         self._collection = self._client.get_or_create_collection(
@@ -87,7 +84,7 @@ class ChromaClient:
         results = await loop.run_in_executor(None, lambda: self._collection.query(
             query_texts=[query],
             n_results=top_k,
-            include=["documents", "metadatas", "distances"],
+            include=["documents", "metadatas", "distances", "ids"],
         ))
         output = []
         if results and results.get("documents"):
