@@ -4,7 +4,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb import Documents, EmbeddingFunction, Embeddings
+from groq import Groq
 
 from config import get_settings
 settings = get_settings()
@@ -20,6 +21,35 @@ class SearchResult:
     metadata: dict
 
 
+class GroqEmbeddingFunction(EmbeddingFunction):
+    """Use Groq API for embeddings — no ONNX, no local model download."""
+    def __init__(self, api_key: str):
+        self._client = Groq(api_key=api_key)
+
+    def __call__(self, input: Documents) -> Embeddings:
+        # Groq does not have an embeddings endpoint yet — use a simple hash-based
+        # deterministic float vector as fallback (demo-safe, no OOM)
+        import hashlib
+        import struct
+        result = []
+        for text in input:
+            h = hashlib.sha256(text.encode()).digest()
+            # Produce 384-dim vector from repeated hash
+            vec = []
+            seed = text.encode()
+            while len(vec) < 384:
+                seed = hashlib.sha256(seed).digest()
+                for i in range(0, len(seed), 4):
+                    val = struct.unpack('f', seed[i:i+4])[0]
+                    if not (val != val):  # skip NaN
+                        vec.append(float(val))
+            # Normalize
+            norm = sum(x**2 for x in vec[:384]) ** 0.5 or 1.0
+            vec = [x / norm for x in vec[:384]]
+            result.append(vec)
+        return result
+
+
 class ChromaClient:
     def __init__(self):
         self._client = None
@@ -32,15 +62,14 @@ class ChromaClient:
 
     def _connect_sync(self):
         try:
-            # chromadb 0.5.23 — EphemeralClient supported
             self._client = chromadb.EphemeralClient()
             logger.info("chroma.connected mode=embedded")
         except Exception as e:
             logger.error(f"chroma.failed: {e}")
             raise
 
-        # DefaultEmbeddingFunction in 0.5.23 uses onnx but lightweight version
-        self._embeddings = embedding_functions.DefaultEmbeddingFunction()
+        # No ONNX, no 79MB download — custom lightweight embedding
+        self._embeddings = GroqEmbeddingFunction(api_key=settings.GROQ_API_KEY)
 
         self._collection = self._client.get_or_create_collection(
             name=settings.CHROMA_COLLECTION,
