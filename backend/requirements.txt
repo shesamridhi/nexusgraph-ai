@@ -12,8 +12,9 @@ langchain-text-splitters>=0.2.0
 langgraph>=0.1.1
 langsmith>=0.1.60
 
-# Pinned to avoid ONNX model auto-download (OOM on Render 512MB free tier)
-chromadb==0.4.24
+# Pinned: 0.5.23 = last version before 0.6+ ONNX heavy deps, compatible with numpy<2
+chromadb==0.5.23
+numpy<2.0
 
 neo4j>=5.18.0
 pypdf>=4.0.0
