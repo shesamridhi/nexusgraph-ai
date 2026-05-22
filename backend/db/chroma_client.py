@@ -33,13 +33,15 @@ class ChromaClient:
     def _connect_sync(self):
         try:
             # Embedded mode — no separate ChromaDB server needed
-            self._client = chromadb.EphemeralClient()
+            self._client = chromadb.Client()  # 0.4.24 compatible (EphemeralClient = Client)
             logger.info("chroma.connected mode=embedded")
         except Exception as e:
             logger.error(f"chroma.failed: {e}")
             raise
 
+        # Use DefaultEmbeddingFunction from 0.4.24 — lightweight, no large ONNX download
         self._embeddings = embedding_functions.DefaultEmbeddingFunction()
+
         self._collection = self._client.get_or_create_collection(
             name=settings.CHROMA_COLLECTION,
             embedding_function=self._embeddings,
