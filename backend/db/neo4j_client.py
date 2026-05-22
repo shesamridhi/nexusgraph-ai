@@ -22,14 +22,20 @@ class Neo4jClient:
         self._driver: Optional[AsyncDriver] = None
 
     async def connect(self):
-        self._driver = AsyncGraphDatabase.driver(
-            settings.NEO4J_URI,
-            auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
-            max_connection_pool_size=50,
-        )
-        await self._driver.verify_connectivity()
-        await self._create_constraints()
-        logger.info("neo4j.connected", uri=settings.NEO4J_URI)
+        try:
+            self._driver = AsyncGraphDatabase.driver(
+                settings.NEO4J_URI,
+                auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+                max_connection_pool_size=50,
+                connection_timeout=30,
+                max_transaction_retry_time=30,
+            )
+            await self._driver.verify_connectivity()
+            await self._create_constraints()
+            logger.info("neo4j.connected", uri=settings.NEO4J_URI)
+        except Exception as e:
+            logger.error("neo4j.connection_failed", error=str(e))
+            self._driver = None  # Important: None set karo failure pe
 
     async def close(self):
         if self._driver:
@@ -37,6 +43,8 @@ class Neo4jClient:
 
     async def _create_constraints(self):
         """Idempotent schema constraints."""
+        if self._driver is None:
+            return
         constraints = [
             "CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
             "CREATE CONSTRAINT author_name IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
@@ -54,6 +62,8 @@ class Neo4jClient:
 
     async def upsert_document(self, doc_id: str, title: str, content_preview: str,
                                metadata: Dict[str, Any]) -> bool:
+        if self._driver is None:
+            return False
         cypher = """
         MERGE (d:Document {id: $doc_id})
         SET d.title = $title,
@@ -71,6 +81,8 @@ class Neo4jClient:
             return bool(await result.single())
 
     async def upsert_author(self, name: str, affiliation: str = "") -> bool:
+        if self._driver is None:
+            return False
         cypher = """
         MERGE (a:Author {name: $name})
         SET a.affiliation = $affiliation,
@@ -82,6 +94,8 @@ class Neo4jClient:
             return bool(await result.single())
 
     async def upsert_topic(self, name: str, category: str = "general") -> bool:
+        if self._driver is None:
+            return False
         cypher = """
         MERGE (t:Topic {name: $name})
         SET t.category = $category,
@@ -95,6 +109,8 @@ class Neo4jClient:
     async def create_relationship(self, from_id: str, from_label: str,
                                    to_id: str, to_label: str,
                                    rel_type: str, properties: Dict = None) -> bool:
+        if self._driver is None:
+            return False
         cypher = f"""
         MATCH (a:{from_label} {{{'name' if from_label != 'Document' else 'id'}: $from_id}})
         MATCH (b:{to_label} {{{'name' if to_label != 'Document' else 'id'}: $to_id}})
@@ -116,6 +132,8 @@ class Neo4jClient:
     async def find_related_documents(self, entity_name: str,
                                       max_hops: int = 2) -> GraphResult:
         """Multi-hop graph traversal — the core 'relationship query'."""
+        if self._driver is None:
+            return GraphResult()
         cypher = """
         MATCH path = (start)-[*1..$hops]-(d:Document)
         WHERE (start.name = $name OR start.id = $name)
@@ -149,6 +167,8 @@ class Neo4jClient:
 
     async def find_co_authors(self, author_name: str) -> List[str]:
         """Find all co-authors of a given author."""
+        if self._driver is None:
+            return []
         cypher = """
         MATCH (a:Author {name: $name})-[:WROTE]->(d:Document)<-[:WROTE]-(coauthor:Author)
         WHERE coauthor.name <> $name
@@ -162,6 +182,8 @@ class Neo4jClient:
 
     async def keyword_subgraph(self, keywords: List[str]) -> GraphResult:
         """Find subgraph matching any of the given keywords/topics."""
+        if self._driver is None:
+            return GraphResult()
         cypher = """
         UNWIND $keywords as kw
         MATCH (t:Topic)-[:COVERS]->(d:Document)
@@ -185,6 +207,13 @@ class Neo4jClient:
 
     async def get_stats(self) -> Dict[str, Any]:
         """Graph database statistics."""
+        if self._driver is None:
+            return {
+                "total_nodes": 0,
+                "total_relationships": 0,
+                "node_labels": {},
+                "relationship_types": {},
+            }
         async with self._driver.session() as session:
             node_result = await session.run(
                 "MATCH (n) RETURN labels(n)[0] as label, count(*) as count"
@@ -202,6 +231,8 @@ class Neo4jClient:
             }
 
     async def health_check(self) -> str:
+        if self._driver is None:
+            return "unavailable"
         try:
             async with self._driver.session() as session:
                 await session.run("RETURN 1")

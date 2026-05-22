@@ -11,7 +11,7 @@ from typing import Optional
 
 # ── Config (UPDATED FOR CLOUD SYNC) ───────────────────────────────────────────
 # Ab yeh aapke live hosted server backend URL se data seamlessly pick karega
-API_BASE = os.getenv("API_BASE_URL", "https://nexusgraph-ai-1.onrender.com")
+API_BASE = os.getenv("API_BASE_URL", "https://nexusgraph-ai.onrender.com")
 
 st.set_page_config(
     page_title="NexusGraph AI",
