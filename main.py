@@ -97,7 +97,7 @@ async def health_check():
     neo4j_status = await neo4j_client.health_check()
     chroma_status = await chroma_client.health_check()
     # Quick OpenAI check
-    openai_status = "configured" if settings.OPENAI_API_KEY.startswith("sk-") and len(settings.OPENAI_API_KEY) > 10 else "not_configured"
+    openai_status = "configured" if settings.GROQ_API_KEY and len(settings.GROQ_API_KEY) > 10 else "not_configured"
 
     overall = "healthy" if all(
         s in ("healthy", "configured") for s in [neo4j_status, chroma_status, openai_status]

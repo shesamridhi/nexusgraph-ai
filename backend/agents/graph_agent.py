@@ -13,6 +13,7 @@ from langgraph.graph import StateGraph, END
 import operator
 import uuid
 
+from rank_bm25 import BM25Okapi
 from config import get_settings
 from models.schemas import (
     QueryType, AgentStatus, AgentStep,
@@ -136,6 +137,17 @@ async def researcher_node(state: AgentState) -> dict:
                 context_parts.append("=== SEMANTIC SEARCH RESULTS ===")
                 for i, r in enumerate(vector_results[:5], 1):
                     context_parts.append(f"[{i}] (score={r.score:.3f}) {r.content[:400]}")
+
+            # BM25 hybrid reranking
+            if vector_results:
+                all_docs = [r.content for r in vector_results]
+                tokenized = [d.split() for d in all_docs]
+                bm25 = BM25Okapi(tokenized)
+                bm25_scores = bm25.get_scores(state["question"].split())
+                top_idx = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:3]
+                context_parts.append("\n=== BM25 RERANKED TOP RESULTS ===")
+                for idx in top_idx:
+                    context_parts.append(f"[BM25] {all_docs[idx][:300]}")
         except Exception as e:
             logger.error("researcher.vector_error", error=str(e))
 
@@ -281,6 +293,32 @@ Evaluate this answer:""")
 
 # ── Conditional Edge ──────────────────────────────────────────────────────────
 
+
+async def memory_agent_node(state: AgentState) -> dict:
+    step_num = len(state["agent_trace"]) + 1
+    try:
+        cypher = """
+        MERGE (m:Memory {query_id: $query_id})
+        SET m.question = $question,
+            m.answer = $answer,
+            m.confidence = $confidence,
+            m.created_at = datetime()
+        """
+        async with neo4j_client._driver.session() as session:
+            await session.run(cypher,
+                query_id=state["query_id"],
+                question=state["question"],
+                answer=state["answer"][:500],
+                confidence=state["confidence"]
+            )
+    except Exception as e:
+        logger.warning("memory_agent.failed", error=str(e))
+    trace_step = AgentStep(
+        step=step_num, agent="MemoryAgent",
+        action=f"Stored query in Neo4j memory"
+    )
+    return {"agent_trace": [trace_step]}
+
 def should_retry(state: AgentState) -> str:
     if state.get("needs_retry", False):
         logger.info("agent.retry", count=state["retry_count"])
@@ -295,14 +333,16 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("router", router_node)
     graph.add_node("researcher", researcher_node)
     graph.add_node("critic", critic_node)
+    graph.add_node("memory", memory_agent_node)
     graph.set_entry_point("router")
     graph.add_edge("router", "researcher")
     graph.add_edge("researcher", "critic")
     graph.add_conditional_edges(
         "critic",
         should_retry,
-        {"researcher": "researcher", "end": END},
+        {"researcher": "researcher", "end": "memory"},
     )
+    graph.add_edge("memory", END)
     return graph.compile()
 
 
@@ -354,7 +394,7 @@ async def run_research_query(question: str, max_hops: int = 2,
             answer=final_state["answer"],
             query_type=final_state["query_type"],
             confidence=final_state["confidence"],
-            sources=final_state["vector_results"][:5],
+            sources=[VectorResult(doc_id=r.doc_id, content=r.content, score=r.score, metadata=r.metadata if isinstance(r.metadata, dict) else {}) for r in final_state["vector_results"][:5]],
             graph_context=final_state["graph_result"],
             agent_trace=final_trace,
             iterations=final_state["retry_count"] + 1,
@@ -373,3 +413,4 @@ async def run_research_query(question: str, max_hops: int = 2,
             iterations=1,
             latency_ms=round(latency, 2),
         )
+

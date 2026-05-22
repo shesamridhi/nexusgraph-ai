@@ -1,7 +1,7 @@
 """
-NexusGraph AI — The Agentic Brain (LangGraph)
-Implements the Think-Check-Execute loop:
-  Router → Researcher → Critic → (loop if needed) → Answer
+NexusGraph AI — The Agentic Brain (LangGraph + Groq)
+Think-Check-Execute loop:
+  Router → Researcher → Critic → (retry if needed) → Answer
 """
 import structlog
 import json
@@ -31,27 +31,23 @@ class AgentState(TypedDict):
     query_id: str
     question: str
     max_hops: int
-    # Routing
     query_type: QueryType
     extracted_entities: List[str]
     extracted_keywords: List[str]
-    # Research
     vector_results: List[VectorResult]
     graph_result: Optional[GraphResult]
     combined_context: str
-    # Critic
     confidence: float
     critique: str
     needs_retry: bool
     retry_count: int
-    # Output
     answer: str
     agent_trace: Annotated[List[AgentStep], operator.add]
     status: AgentStatus
     error: Optional[str]
 
 
-# ── LLM Factory ───────────────────────────────────────────────────────────────
+# ── LLM Factory (Groq) ────────────────────────────────────────────────────────
 
 def get_llm(temperature: float = 0.0) -> ChatGroq:
     return ChatGroq(
@@ -71,16 +67,15 @@ Analyze the user's question and extract:
 3. keywords: key concepts and topics for semantic search
 
 Rules:
-- Use "graph" when the question asks about relationships, collaborations, connections, "who worked with", "all X related to Y", etc.
+- Use "graph" when the question asks about relationships, collaborations, connections, "who worked with", "all X related to Y"
 - Use "vector" for "what is", "explain", "describe", "summarize" questions
 - Use "hybrid" when both context and relationships are needed
 
-Respond ONLY with valid JSON, no markdown:
+Respond ONLY with valid JSON, no markdown, no extra text:
 {"query_type": "...", "entities": [...], "keywords": [...]}"""
 
 
 async def router_node(state: AgentState) -> dict:
-    """Route the query to vector, graph, or hybrid retrieval."""
     step_num = len(state["agent_trace"]) + 1
     logger.info("agent.router", query=state["question"][:80])
 
@@ -93,7 +88,6 @@ async def router_node(state: AgentState) -> dict:
     try:
         response = await llm.ainvoke(messages)
         raw = response.content.strip()
-        # Strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -124,7 +118,6 @@ async def router_node(state: AgentState) -> dict:
 # ── Agent 2: Researcher ────────────────────────────────────────────────────────
 
 async def researcher_node(state: AgentState) -> dict:
-    """Fetch context from vector store and/or graph DB based on routing decision."""
     step_num = len(state["agent_trace"]) + 1
     logger.info("agent.researcher", type=state["query_type"], retry=state.get("retry_count", 0))
 
@@ -132,7 +125,7 @@ async def researcher_node(state: AgentState) -> dict:
     graph_result: Optional[GraphResult] = None
     context_parts = []
 
-    # ── Vector retrieval ──
+    # Vector retrieval
     if state["query_type"] in (QueryType.VECTOR, QueryType.HYBRID):
         try:
             top_k = settings.VECTOR_TOP_K + (state.get("retry_count", 0) * 3)
@@ -142,13 +135,11 @@ async def researcher_node(state: AgentState) -> dict:
             if vector_results:
                 context_parts.append("=== SEMANTIC SEARCH RESULTS ===")
                 for i, r in enumerate(vector_results[:5], 1):
-                    context_parts.append(
-                        f"[{i}] (score={r.score:.3f}) {r.content[:400]}"
-                    )
+                    context_parts.append(f"[{i}] (score={r.score:.3f}) {r.content[:400]}")
         except Exception as e:
             logger.error("researcher.vector_error", error=str(e))
 
-    # ── Graph retrieval ──
+    # Graph retrieval
     if state["query_type"] in (QueryType.GRAPH, QueryType.HYBRID):
         try:
             if state["extracted_entities"]:
@@ -159,16 +150,14 @@ async def researcher_node(state: AgentState) -> dict:
                 )
                 if graph_result.nodes:
                     context_parts.append("\n=== GRAPH RELATIONSHIP RESULTS ===")
-                    context_parts.append(f"Found {len(graph_result.nodes)} related documents via graph traversal:")
+                    context_parts.append(f"Found {len(graph_result.nodes)} related documents:")
                     for node in graph_result.nodes[:8]:
                         title = node.properties.get("title", node.id)
                         context_parts.append(f"  • {title}")
                     if graph_result.relationships:
-                        context_parts.append(f"Via {len(graph_result.relationships)} relationship paths:")
                         for rel in graph_result.relationships[:5]:
                             context_parts.append(f"  {rel.source} --[{rel.type}]--> {rel.target}")
 
-            # Keyword-based graph search
             if state["extracted_keywords"]:
                 kw_graph = await neo4j_client.keyword_subgraph(state["extracted_keywords"])
                 if kw_graph.nodes:
@@ -204,7 +193,7 @@ Given a question, retrieved context, and a draft answer, evaluate:
 2. Is the answer grounded in the provided context (no hallucination)?
 3. Is the context sufficient, or should we retrieve more?
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON, no markdown, no extra text:
 {
   "confidence": 0.0-1.0,
   "verdict": "pass" or "retry",
@@ -219,13 +208,12 @@ Format your answer in clear paragraphs. Be precise and avoid speculation."""
 
 
 async def critic_node(state: AgentState) -> dict:
-    """Evaluate answer quality; flag for retry if confidence is low."""
     step_num = len(state["agent_trace"]) + 1
     logger.info("agent.critic", retry_count=state.get("retry_count", 0))
 
     llm = get_llm(temperature=0.1)
 
-    # First generate a draft answer
+    # Generate draft answer
     answer_messages = [
         SystemMessage(content=ANSWER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -238,7 +226,7 @@ Generate a comprehensive answer:""")
     answer_response = await llm.ainvoke(answer_messages)
     draft_answer = answer_response.content.strip()
 
-    # Now critique it
+    # Critique it
     critique_messages = [
         SystemMessage(content=CRITIC_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -300,15 +288,13 @@ def should_retry(state: AgentState) -> str:
     return "end"
 
 
-# ── Build the Graph ───────────────────────────────────────────────────────────
+# ── Build Graph ───────────────────────────────────────────────────────────────
 
 def build_agent_graph() -> StateGraph:
     graph = StateGraph(AgentState)
-
     graph.add_node("router", router_node)
     graph.add_node("researcher", researcher_node)
     graph.add_node("critic", critic_node)
-
     graph.set_entry_point("router")
     graph.add_edge("router", "researcher")
     graph.add_edge("researcher", "critic")
@@ -324,7 +310,6 @@ def build_agent_graph() -> StateGraph:
 
 async def run_research_query(question: str, max_hops: int = 2,
                               query_id: str = None) -> QueryResponse:
-    """Execute the full Think-Check-Execute agent loop."""
     import time
     if query_id is None:
         query_id = str(uuid.uuid4())[:8]
@@ -356,7 +341,6 @@ async def run_research_query(question: str, max_hops: int = 2,
         final_state = await graph.ainvoke(initial_state)
         latency = (time.time() - start_time) * 1000
 
-        # Mark final status
         final_trace = final_state["agent_trace"]
         final_trace.append(AgentStep(
             step=len(final_trace) + 1,

@@ -18,4 +18,6 @@ httpx>=0.27.0
 python-dotenv>=1.0.0
 tenacity>=8.2.0
 structlog>=24.0.0
-prometheus-fastapi-instrumentator>=7.0.0
+prometheus-fastapi-instrumentator>=7.0.0rank_bm25
+rank_bm25
+mcp
