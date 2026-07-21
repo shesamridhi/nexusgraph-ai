@@ -61,6 +61,7 @@ jobs:
         run: docker build ./frontend -t nexusgraph-frontend:${{ github.sha }}
 
       - name: Test docker-compose config
+- name: Test docker-compose config
         run: |
           cp .env.example .env || touch .env
           docker compose config

@@ -229,7 +229,7 @@ Set environment variables in Railway dashboard: `OPENAI_API_KEY`, `NEO4J_URI`, `
 
 **Hybrid queries:**
 - `What did Google Brain researchers contribute to NLP and what techniques did they use?`
-- `Find papers about pre-training from researchers at Facebook AI Research`
+- `Find papers about pre-training from researchers at Facebook AI Research`.
 
 ---
 
