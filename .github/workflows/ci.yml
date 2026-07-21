@@ -61,8 +61,10 @@ jobs:
         run: docker build ./frontend -t nexusgraph-frontend:${{ github.sha }}
 
       - name: Test docker-compose config
-        run: docker compose config
-
+- name: Test docker-compose config
+        run: |
+          cp .env.example .env || touch .env
+          docker compose config
   # ── Deploy to Railway (main branch only) ────────────────────────────────────
   deploy:
     name: Deploy to Railway
